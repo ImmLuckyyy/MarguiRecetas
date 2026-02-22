@@ -502,12 +502,15 @@ export function estimateServings(
 // ─── [5] GEMINI AI — refinamiento final ───────────────────────────────────────
 
 function getGeminiKey(): string {
-  return (
-    import.meta.env.VITE_GEMINI_API_KEY ||
-    (window as any).__GEMINI_KEY__ ||
-    sessionStorage.getItem('sc_geminikey') ||
-    ''
-  );
+  // Priority: sessionStorage (entered via UI) → window var → .env build-time var
+  const fromSession = sessionStorage.getItem('sc_geminikey');
+  const fromWindow = (window as any).__GEMINI_KEY__;
+  const fromEnv = import.meta.env.VITE_GEMINI_API_KEY;
+  const key = fromSession || fromWindow || fromEnv || '';
+  if (!key) {
+    console.warn('[Gemini] No API key found. Set VITE_GEMINI_API_KEY in .env or enter it via UI settings.');
+  }
+  return key;
 }
 
 const NORMALIZE_PROMPT = (text: string) => `
@@ -550,7 +553,9 @@ async function refineWithGemini(text: string): Promise<NormalizedRecipe | null> 
   const key = getGeminiKey();
   if (!key) return null;
 
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`;
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${key}`;
+
+  console.log('[Gemini Normalizer] Sending request, model: gemini-2.5-flash-lite');
 
   const response = await fetch(endpoint, {
     method: 'POST',
@@ -561,7 +566,13 @@ async function refineWithGemini(text: string): Promise<NormalizedRecipe | null> 
     }),
   });
 
-  if (!response.ok) return null;
+  console.log('[Gemini Normalizer] Response status:', response.status);
+
+  if (!response.ok) {
+    const errBody = await response.text();
+    console.error('[Gemini Normalizer] Error:', errBody);
+    return null;
+  }
 
   const data = await response.json();
   const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
