@@ -1,4 +1,5 @@
-// Utilidad para parsear recetas desde texto de redes sociales
+// Utilidad para parsear recetas desde redes sociales
+// Usa ScrapeCreators API para obtener metadata y Claude API para parsear la receta
 
 export interface ParsedRecipe {
   name: string;
@@ -28,314 +29,262 @@ export interface ParsedRecipeResult {
   error?: string;
 }
 
-// Detectar la plataforma desde la URL
+// ─── Configuración de API Keys ───────────────────────────────────────────────
+// Las keys se leen desde variables de entorno (archivo .env en la raíz del proyecto)
+// VITE_SCRAPECREATORS_API_KEY=tu_key_aqui
+// VITE_ANTHROPIC_API_KEY=tu_key_aqui
+
+function getScrapCreatorsKey(): string {
+  return (
+    import.meta.env.VITE_SCRAPECREATORS_API_KEY ||
+    (window as any).__SCRAPECREATORS_KEY__ ||
+    sessionStorage.getItem('sc_scrapekey') ||
+    ''
+  );
+}
+
+function getAnthropicKey(): string {
+  return (
+    import.meta.env.VITE_ANTHROPIC_API_KEY ||
+    (window as any).__ANTHROPIC_KEY__ ||
+    sessionStorage.getItem('sc_anthropickey') ||
+    ''
+  );
+}
+
+// ─── Detectar plataforma ─────────────────────────────────────────────────────
 export function detectPlatform(url: string): 'instagram' | 'tiktok' | 'youtube' | null {
   const urlLower = url.toLowerCase();
-  
-  if (urlLower.includes('instagram.com') || urlLower.includes('instagr.am')) {
-    return 'instagram';
-  }
-  if (urlLower.includes('tiktok.com')) {
-    return 'tiktok';
-  }
-  if (urlLower.includes('youtube.com') || urlLower.includes('youtu.be')) {
-    return 'youtube';
-  }
-  
+  if (urlLower.includes('instagram.com') || urlLower.includes('instagr.am')) return 'instagram';
+  if (urlLower.includes('tiktok.com')) return 'tiktok';
+  if (urlLower.includes('youtube.com') || urlLower.includes('youtu.be')) return 'youtube';
   return null;
 }
 
-// Limpiar texto de emojis, hashtags y texto promocional
-function cleanText(text: string): string {
-  // Remover emojis (simplificado)
-  let cleaned = text.replace(/[\u{1F300}-\u{1F9FF}]/gu, '');
-  // Remover hashtags
-  cleaned = cleaned.replace(/#\w+/g, '');
-  // Remover múltiples espacios y saltos de línea
-  cleaned = cleaned.replace(/\s+/g, ' ').trim();
-  return cleaned;
+// ─── ScrapeCreators: obtener info del video ──────────────────────────────────
+
+interface VideoMetadata {
+  title: string;
+  description: string;
+  thumbnailUrl?: string;
+  videoUrl?: string;
+  transcript?: string;
 }
 
-// Extraer ingredientes del texto
-function extractIngredients(text: string): Array<{ name: string; quantity: string; unit: string }> {
-  const ingredients: Array<{ name: string; quantity: string; unit: string }> = [];
-  const lines = text.split(/\n|\.(?=\s|$)/);
-  
-  // Patrones comunes para ingredientes
-  const ingredientPatterns = [
-    /(?:^|\n)[-•*]\s*(.+)/gi,  // Lista con viñetas
-    /(\d+(?:[\.,]\d+)?)\s*(g|kg|ml|l|taza|cucharada|cucharadita|cdta|cda|unidad|unidades|pizca|diente|dientes)?\s+(?:de\s+)?(.+)/gi,
-  ];
-  
-  for (const line of lines) {
-    const trimmedLine = line.trim();
-    if (!trimmedLine) continue;
-    
-    // Buscar patrones de cantidad + ingrediente
-    const match = trimmedLine.match(/^(\d+(?:[\.,]\d+)?)\s*(g|kg|ml|l|taza|cucharada|cucharadita|cdta|cda|unidad|unidades|pizca|diente|dientes)?\s+(?:de\s+)?(.+)$/i);
-    
-    if (match) {
-      ingredients.push({
-        name: cleanText(match[3] || ''),
-        quantity: match[1] || '1',
-        unit: match[2] || ''
-      });
-    } else if (trimmedLine.startsWith('-') || trimmedLine.startsWith('•') || trimmedLine.startsWith('*')) {
-      // Ingrediente sin cantidad específica
-      const ingredientText = trimmedLine.substring(1).trim();
-      const quantityMatch = ingredientText.match(/^(\d+(?:[\.,]\d+)?)\s*(g|kg|ml|l|taza|cucharada|cucharadita|cdta|cda|unidad|unidades|pizca|diente|dientes)?\s+(?:de\s+)?(.+)$/i);
-      
-      if (quantityMatch) {
-        ingredients.push({
-          name: cleanText(quantityMatch[3] || ''),
-          quantity: quantityMatch[1] || '1',
-          unit: quantityMatch[2] || ''
-        });
-      } else {
-        ingredients.push({
-          name: cleanText(ingredientText),
-          quantity: '',
-          unit: ''
-        });
-      }
-    }
-  }
-  
-  return ingredients;
-}
+async function fetchTikTokMetadata(url: string, apiKey: string): Promise<VideoMetadata> {
+  const endpoint = `https://api.scrapecreators.com/v2/tiktok/video?url=${encodeURIComponent(url)}`;
 
-// Extraer pasos de preparación
-function extractInstructions(text: string): Array<{ order: number; description: string; timerMinutes?: number }> {
-  const instructions: Array<{ order: number; description: string; timerMinutes?: number }> = [];
-  const lines = text.split(/\n/);
-  
-  let stepNumber = 1;
-  
-  for (const line of lines) {
-    const trimmedLine = line.trim();
-    if (!trimmedLine) continue;
-    
-    // Buscar pasos numerados o con viñetas
-    const numberedMatch = trimmedLine.match(/^(\d+)[.\):-]\s*(.+)/);
-    const bulletMatch = trimmedLine.match(/^[-•*]\s*(.+)/);
-    
-    if (numberedMatch) {
-      instructions.push({
-        order: parseInt(numberedMatch[1]),
-        description: cleanText(numberedMatch[2])
-      });
-      stepNumber = parseInt(numberedMatch[1]) + 1;
-    } else if (bulletMatch) {
-      instructions.push({
-        order: stepNumber++,
-        description: cleanText(bulletMatch[1])
-      });
-    } else if (trimmedLine.length > 20 && !trimmedLine.includes('http')) {
-      // Posible paso sin numeración
-      const lowerLine = trimmedLine.toLowerCase();
-      const actionWords = ['mezcla', 'añade', 'agrega', 'cocina', 'hierve', 'calienta', 'corta', 'pica', 'bate', 'revuelve', 'sirve', 'coloca', 'vierte'];
-      
-      if (actionWords.some(word => lowerLine.startsWith(word))) {
-        instructions.push({
-          order: stepNumber++,
-          description: cleanText(trimmedLine)
-        });
-      }
-    }
-  }
-  
-  return instructions;
-}
-
-// Extraer tags del texto
-function extractTags(text: string): string[] {
-  const tags: string[] = [];
-  const hashtags = text.match(/#(\w+)/g);
-  
-  if (hashtags) {
-    const relevantTags = hashtags
-      .map(tag => tag.substring(1).toLowerCase())
-      .filter(tag => !['receta', 'recipe', 'food', 'cooking'].includes(tag))
-      .slice(0, 5); // Máximo 5 tags
-    
-    tags.push(...relevantTags);
-  }
-  
-  // Detectar palabras clave comunes
-  const keywords = ['rápido', 'fácil', 'saludable', 'vegetariano', 'vegano', 'sin gluten', 'postre', 'desayuno'];
-  const lowerText = text.toLowerCase();
-  
-  keywords.forEach(keyword => {
-    if (lowerText.includes(keyword) && !tags.includes(keyword)) {
-      tags.push(keyword);
-    }
+  const response = await fetch(endpoint, {
+    headers: { 'x-api-key': apiKey },
   });
-  
-  return tags;
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`ScrapeCreators TikTok error ${response.status}: ${errorText}`);
+  }
+
+  const data = await response.json();
+  const video = data?.data || data;
+  const desc = video?.desc || video?.description || '';
+  const title = desc.split('\n')[0]?.slice(0, 80) || 'Receta de TikTok';
+
+  return {
+    title,
+    description: desc,
+    thumbnailUrl: video?.video?.cover || video?.cover_uri || '',
+    videoUrl: url,
+    transcript: video?.transcript || '',
+  };
 }
 
-// Detectar si el texto contiene una receta
-function isRecipeContent(text: string): boolean {
-  const recipeKeywords = [
-    'ingrediente', 'paso', 'preparación', 'cocina', 'mezcla', 'hornea',
-    'cucharada', 'taza', 'gramo', 'minuto', 'temperatura', 'receta'
-  ];
-  
-  const lowerText = text.toLowerCase();
-  const matchCount = recipeKeywords.filter(keyword => lowerText.includes(keyword)).length;
-  
-  // Si tiene al menos 3 palabras clave relacionadas con recetas
-  return matchCount >= 3;
+async function fetchInstagramMetadata(url: string, apiKey: string): Promise<VideoMetadata> {
+  const endpoint = `https://api.scrapecreators.com/v1/instagram/post?url=${encodeURIComponent(url)}`;
+
+  const response = await fetch(endpoint, {
+    headers: { 'x-api-key': apiKey },
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`ScrapeCreators Instagram error ${response.status}: ${errorText}`);
+  }
+
+  const data = await response.json();
+  const post = data?.data || data;
+  const caption = post?.caption || post?.edge_media_to_caption?.edges?.[0]?.node?.text || '';
+  const title = caption.split('\n')[0]?.slice(0, 80) || 'Receta de Instagram';
+
+  return {
+    title,
+    description: caption,
+    thumbnailUrl: post?.thumbnail_url || post?.display_url || '',
+    videoUrl: url,
+  };
 }
 
-// Parsear el texto completo
-export function parseRecipeFromText(
-  text: string,
-  title: string,
+// ─── Claude API: parsear texto a receta estructurada ────────────────────────
+
+async function parseWithClaude(
+  metadata: VideoMetadata,
   url: string,
   platform: 'instagram' | 'tiktok' | 'youtube'
-): ParsedRecipeResult {
-  // Verificar si es contenido de receta
-  if (!isRecipeContent(text)) {
+): Promise<ParsedRecipeResult> {
+  const anthropicKey = getAnthropicKey();
+  if (!anthropicKey) {
+    throw new Error('Falta la API key de Anthropic. Configura VITE_ANTHROPIC_API_KEY en el archivo .env');
+  }
+
+  const textContent = [
+    metadata.title,
+    metadata.description,
+    metadata.transcript ? `Transcripción: ${metadata.transcript}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+
+  const prompt = `Analiza el siguiente texto de un video de ${platform} y extrae la receta si existe.
+
+TEXTO DEL VIDEO:
+${textContent}
+
+Si el texto contiene una receta, extráela y responde ÚNICAMENTE con un JSON válido con esta estructura exacta:
+{
+  "is_recipe": true,
+  "recipe": {
+    "name": "nombre de la receta",
+    "description": "descripción breve",
+    "servings": número de porciones (0 si no se menciona),
+    "ingredients": [
+      { "name": "ingrediente", "quantity": "cantidad", "unit": "unidad" }
+    ],
+    "steps": [
+      { "order": 1, "description": "descripción del paso", "timerMinutes": null }
+    ],
+    "tags": ["tag1", "tag2"],
+    "categories": ["categoria"]
+  }
+}
+
+Si el texto NO contiene una receta, responde:
+{ "is_recipe": false }
+
+REGLAS:
+- quantity debe ser un string con el número (ej: "2", "1/2", "")
+- unit puede ser: "g", "kg", "ml", "l", "taza", "cucharada", "cucharadita", "unidad", "pizca", o ""
+- timerMinutes es un número si el paso tiene tiempo específico, sino null
+- Traduce todo al español si está en otro idioma
+- No incluyas texto extra, solo el JSON`;
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': anthropicKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 2000,
+      messages: [{ role: 'user', content: prompt }],
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response.text();
+    throw new Error(`Claude API error ${response.status}: ${err}`);
+  }
+
+  const claudeData = await response.json();
+  const rawText = claudeData.content?.[0]?.text || '';
+  const cleanJson = rawText.replace(/```json\n?|```\n?/g, '').trim();
+
+  let parsed: any;
+  try {
+    parsed = JSON.parse(cleanJson);
+  } catch {
+    throw new Error('No se pudo interpretar la respuesta de Claude. Intenta con otro enlace.');
+  }
+
+  if (!parsed.is_recipe || !parsed.recipe) {
     return { is_recipe: false };
   }
-  
-  // Extraer componentes
-  const ingredients = extractIngredients(text);
-  const instructions = extractInstructions(text);
-  
-  // Validar que tenga al menos algunos ingredientes y pasos
-  if (ingredients.length === 0 || instructions.length === 0) {
-    return { is_recipe: false };
-  }
-  
-  // Extraer descripción (primeras líneas que no sean ingredientes ni pasos)
-  const lines = text.split('\n').filter(line => line.trim());
-  let description = '';
-  for (const line of lines.slice(0, 3)) {
-    const trimmed = line.trim();
-    if (!trimmed.match(/^(\d+[.\):-]|[-•*])/)) {
-      description += trimmed + ' ';
-    }
-  }
-  
+
   const recipe: ParsedRecipe = {
-    name: title || 'Receta importada',
-    description: cleanText(description) || 'Receta importada desde ' + platform,
-    ingredients,
-    steps: instructions.map((step, index) => ({ ...step, order: index + 1 })),
-    photos: [],
-    videoUrl: '',
-    categories: [],
-    tags: extractTags(text),
-    servings: 0,
+    name: parsed.recipe.name || 'Receta importada',
+    description: parsed.recipe.description || '',
+    ingredients: (parsed.recipe.ingredients || []).map((i: any) => ({
+      name: i.name || '',
+      quantity: String(i.quantity || ''),
+      unit: i.unit || '',
+    })),
+    steps: (parsed.recipe.steps || []).map((s: any, idx: number) => ({
+      order: s.order || idx + 1,
+      description: s.description || '',
+      timerMinutes: s.timerMinutes || undefined,
+    })),
+    photos: metadata.thumbnailUrl ? [metadata.thumbnailUrl] : [],
+    videoUrl: url,
+    categories: parsed.recipe.categories || [],
+    tags: parsed.recipe.tags || [],
+    servings: parsed.recipe.servings || 0,
     source_url: url,
-    source_platform: platform
+    source_platform: platform,
   };
-  
+
   return { is_recipe: true, recipe };
 }
 
-// SIMULACIÓN: En producción, esto se conectaría a APIs reales
-export async function fetchMetadataFromUrl(url: string): Promise<{ title: string; description: string } | null> {
+// ─── Función principal ────────────────────────────────────────────────────────
+
+export async function fetchAndParseRecipe(url: string): Promise<ParsedRecipeResult> {
   const platform = detectPlatform(url);
-  
   if (!platform) {
-    throw new Error('Plataforma no soportada. Solo se aceptan enlaces de Instagram, TikTok o YouTube.');
+    throw new Error('URL no válida. Solo se aceptan enlaces de Instagram, TikTok o YouTube.');
   }
-  
-  // IMPORTANTE: Esto es una simulación con datos de ejemplo
-  // En producción, necesitarías:
-  // 1. Para Instagram: Instagram Basic Display API o web scraping
-  // 2. Para TikTok: TikTok API o web scraping
-  // 3. Para YouTube: YouTube Data API v3
-  
-  // Simular delay de red
-  await new Promise(resolve => setTimeout(resolve, 1500));
-  
-  // Datos de ejemplo según la plataforma
-  const mockData = {
-    instagram: {
-      title: 'Receta de Tacos al Pastor',
-      description: `¡Los mejores tacos al pastor! 🌮✨
-      
-Ingredientes:
-- 500g de carne de cerdo
-- 3 chiles guajillo
-- 2 dientes de ajo
-- 1 cucharada de achiote
-- 1/2 taza de jugo de naranja
-- 1/4 taza de vinagre
-- Tortillas de maíz
-- Piña
-- Cebolla
-- Cilantro
 
-Preparación:
-1. Hidrata los chiles en agua caliente por 15 minutos
-2. Licúa los chiles con ajo, achiote, jugo de naranja y vinagre
-3. Marina la carne cortada en tiras con esta salsa por 2 horas
-4. Cocina la carne marinada en una sartén hasta dorar
-5. Calienta las tortillas
-6. Sirve los tacos con piña, cebolla y cilantro picados
+  const scrapKey = getScrapCreatorsKey();
+  if (!scrapKey) {
+    throw new Error('Falta la API key de ScrapeCreators. Configura VITE_SCRAPECREATORS_API_KEY en el archivo .env');
+  }
 
-#tacos #tacosalpastor #recetamexicana #comidamexicana #recipe`
-    },
-    tiktok: {
-      title: 'Brownies de 3 ingredientes',
-      description: `¿Solo 3 ingredientes? ¡Sí! 🍫
-      
-Ingredientes:
-• 200g chocolate negro
-• 3 huevos
-• 100g azúcar
+  let metadata: VideoMetadata;
 
-Pasos:
-1- Derrite el chocolate al baño maría
-2- Bate los huevos con el azúcar hasta punto letra
-3- Mezcla el chocolate derretido con los huevos
-4- Vierte en un molde engrasado
-5- Hornea a 180°C por 25 minutos
-6- Deja enfriar antes de cortar
+  if (platform === 'tiktok') {
+    metadata = await fetchTikTokMetadata(url, scrapKey);
+  } else if (platform === 'instagram') {
+    metadata = await fetchInstagramMetadata(url, scrapKey);
+  } else {
+    throw new Error('Para YouTube, usa "Normalizar receta" y pega el texto de la descripción del video manualmente.');
+  }
 
-¡Perfectos para cualquier ocasión! 
+  if (!metadata.description && !metadata.transcript) {
+    throw new Error('El video no tiene descripción con texto. Prueba con "Normalizar receta" pegando el contenido manualmente.');
+  }
 
-#brownies #recetafacil #3ingredientes #postre #chocolate`
-    },
-    youtube: {
-      title: 'Ramen Casero Auténtico',
-      description: `Aprende a hacer ramen casero como en Japón 🍜
+  return parseWithClaude(metadata, url, platform);
+}
 
-INGREDIENTES:
-Caldo:
-- 1kg huesos de cerdo
-- 1 cebolla
-- 5 dientes de ajo
-- Jengibre
-- 2L agua
-
-Toppings:
-- 200g panceta de cerdo
-- 2 huevos
-- Cebollín
-- Nori
-- Brotes de bambú
-
-Fideos:
-- 400g fideos ramen
-
-PREPARACIÓN:
-1. Hierve los huesos durante 30 minutos y descarta el agua
-2. Limpia los huesos y vuelve a hervir con cebolla, ajo y jengibre por 6 horas
-3. Cuela el caldo y sazona con sal y salsa de soja
-4. Cocina la panceta en rodajas hasta dorar
-5. Prepara huevos marinados (hervir 6 minutos y marinar en soja)
-6. Cuece los fideos según instrucciones
-7. Monta el bowl: fideos, caldo caliente, panceta, huevo y toppings
-
-#ramen #recetajaponesa #comidajaponesa #ramencasero`
-    }
+// ─── Verificar configuración de keys ─────────────────────────────────────────
+export function checkApiKeysConfigured(): { scrapecreators: boolean; anthropic: boolean } {
+  return {
+    scrapecreators: !!getScrapCreatorsKey(),
+    anthropic: !!getAnthropicKey(),
   };
-  
-  return mockData[platform];
+}
+
+// Compatibilidad con código existente
+export async function fetchMetadataFromUrl(
+  _url: string
+): Promise<{ title: string; description: string } | null> {
+  return null;
+}
+
+export function parseRecipeFromText(
+  _text: string,
+  _title: string,
+  _url: string,
+  _platform: 'instagram' | 'tiktok' | 'youtube'
+): ParsedRecipeResult {
+  return { is_recipe: false };
 }
