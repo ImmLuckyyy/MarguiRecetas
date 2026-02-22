@@ -1,5 +1,5 @@
 // Utilidad para parsear recetas desde redes sociales
-// Usa ScrapeCreators API para obtener metadata y Claude API para parsear la receta
+// Usa ScrapeCreators API para obtener metadata y Gemini (gratuito) para parsear la receta
 
 export interface ParsedRecipe {
   name: string;
@@ -29,10 +29,12 @@ export interface ParsedRecipeResult {
   error?: string;
 }
 
-// ─── Configuración de API Keys ───────────────────────────────────────────────
-// Las keys se leen desde variables de entorno (archivo .env en la raíz del proyecto)
-// VITE_SCRAPECREATORS_API_KEY=tu_key_aqui
-// VITE_ANTHROPIC_API_KEY=tu_key_aqui
+// ─── API Keys ────────────────────────────────────────────────────────────────
+// Opción A (recomendado): agrega en el archivo .env del proyecto:
+//   VITE_SCRAPECREATORS_API_KEY=sc_...
+//   VITE_GEMINI_API_KEY=AIza...
+//
+// Opción B: ingrésalas desde la UI (se guardan en sessionStorage)
 
 function getScrapCreatorsKey(): string {
   return (
@@ -43,11 +45,11 @@ function getScrapCreatorsKey(): string {
   );
 }
 
-function getAnthropicKey(): string {
+function getGeminiKey(): string {
   return (
-    import.meta.env.VITE_ANTHROPIC_API_KEY ||
-    (window as any).__ANTHROPIC_KEY__ ||
-    sessionStorage.getItem('sc_anthropickey') ||
+    import.meta.env.VITE_GEMINI_API_KEY ||
+    (window as any).__GEMINI_KEY__ ||
+    sessionStorage.getItem('sc_geminikey') ||
     ''
   );
 }
@@ -61,149 +63,154 @@ export function detectPlatform(url: string): 'instagram' | 'tiktok' | 'youtube' 
   return null;
 }
 
-// ─── ScrapeCreators: obtener info del video ──────────────────────────────────
+// ─── Verificar configuración ──────────────────────────────────────────────────
+export function checkApiKeysConfigured(): { scrapecreators: boolean; gemini: boolean } {
+  return {
+    scrapecreators: !!getScrapCreatorsKey(),
+    gemini: !!getGeminiKey(),
+  };
+}
+
+// ─── ScrapeCreators: obtener metadata del video ───────────────────────────────
 
 interface VideoMetadata {
   title: string;
   description: string;
   thumbnailUrl?: string;
-  videoUrl?: string;
   transcript?: string;
 }
 
 async function fetchTikTokMetadata(url: string, apiKey: string): Promise<VideoMetadata> {
   const endpoint = `https://api.scrapecreators.com/v2/tiktok/video?url=${encodeURIComponent(url)}`;
-
-  const response = await fetch(endpoint, {
-    headers: { 'x-api-key': apiKey },
-  });
+  const response = await fetch(endpoint, { headers: { 'x-api-key': apiKey } });
 
   if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`ScrapeCreators TikTok error ${response.status}: ${errorText}`);
+    const text = await response.text();
+    throw new Error(`Error al obtener el video de TikTok (${response.status}): ${text}`);
   }
 
   const data = await response.json();
   const video = data?.data || data;
   const desc = video?.desc || video?.description || '';
-  const title = desc.split('\n')[0]?.slice(0, 80) || 'Receta de TikTok';
 
   return {
-    title,
+    title: desc.split('\n')[0]?.slice(0, 80) || 'Receta de TikTok',
     description: desc,
     thumbnailUrl: video?.video?.cover || video?.cover_uri || '',
-    videoUrl: url,
     transcript: video?.transcript || '',
   };
 }
 
 async function fetchInstagramMetadata(url: string, apiKey: string): Promise<VideoMetadata> {
   const endpoint = `https://api.scrapecreators.com/v1/instagram/post?url=${encodeURIComponent(url)}`;
-
-  const response = await fetch(endpoint, {
-    headers: { 'x-api-key': apiKey },
-  });
+  const response = await fetch(endpoint, { headers: { 'x-api-key': apiKey } });
 
   if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`ScrapeCreators Instagram error ${response.status}: ${errorText}`);
+    const text = await response.text();
+    throw new Error(`Error al obtener el post de Instagram (${response.status}): ${text}`);
   }
 
   const data = await response.json();
   const post = data?.data || data;
   const caption = post?.caption || post?.edge_media_to_caption?.edges?.[0]?.node?.text || '';
-  const title = caption.split('\n')[0]?.slice(0, 80) || 'Receta de Instagram';
 
   return {
-    title,
+    title: caption.split('\n')[0]?.slice(0, 80) || 'Receta de Instagram',
     description: caption,
     thumbnailUrl: post?.thumbnail_url || post?.display_url || '',
-    videoUrl: url,
   };
 }
 
-// ─── Claude API: parsear texto a receta estructurada ────────────────────────
+// ─── Gemini API: parsear texto a receta estructurada ─────────────────────────
 
-async function parseWithClaude(
+const RECIPE_PROMPT = (platform: string, text: string) => `
+Analiza el siguiente texto de un video de ${platform} y extrae la receta si existe.
+
+TEXTO DEL VIDEO:
+${text}
+
+Si el texto contiene una receta, extráela y responde ÚNICAMENTE con JSON válido con esta estructura:
+{
+  "is_recipe": true,
+  "recipe": {
+    "name": "nombre de la receta",
+    "description": "descripción breve en 1-2 frases",
+    "servings": 4,
+    "ingredients": [
+      { "name": "harina", "quantity": "200", "unit": "g" }
+    ],
+    "steps": [
+      { "order": 1, "description": "descripción del paso", "timerMinutes": null }
+    ],
+    "tags": ["fácil", "postre"],
+    "categories": ["Postres"]
+  }
+}
+
+Si el texto NO contiene una receta, responde exactamente:
+{ "is_recipe": false }
+
+REGLAS IMPORTANTES:
+- Responde SOLO con el JSON, sin texto adicional, sin markdown, sin explicaciones
+- quantity siempre es string (ej: "200", "1/2", "")
+- unit solo puede ser: "g", "kg", "ml", "l", "taza", "cucharada", "cucharadita", "unidad", "pizca", o ""
+- timerMinutes es número entero si hay tiempo específico, sino null
+- Traduce todo al español
+`.trim();
+
+async function parseWithGemini(
   metadata: VideoMetadata,
   url: string,
   platform: 'instagram' | 'tiktok' | 'youtube'
 ): Promise<ParsedRecipeResult> {
-  const anthropicKey = getAnthropicKey();
-  if (!anthropicKey) {
-    throw new Error('Falta la API key de Anthropic. Configura VITE_ANTHROPIC_API_KEY en el archivo .env');
+  const geminiKey = getGeminiKey();
+  if (!geminiKey) {
+    throw new Error('Falta la Gemini API Key. Configúrala en los ajustes o en el archivo .env');
   }
 
   const textContent = [
     metadata.title,
     metadata.description,
-    metadata.transcript ? `Transcripción: ${metadata.transcript}` : '',
+    metadata.transcript ? `Transcripción del audio: ${metadata.transcript}` : '',
   ]
     .filter(Boolean)
     .join('\n\n');
 
-  const prompt = `Analiza el siguiente texto de un video de ${platform} y extrae la receta si existe.
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`;
 
-TEXTO DEL VIDEO:
-${textContent}
-
-Si el texto contiene una receta, extráela y responde ÚNICAMENTE con un JSON válido con esta estructura exacta:
-{
-  "is_recipe": true,
-  "recipe": {
-    "name": "nombre de la receta",
-    "description": "descripción breve",
-    "servings": número de porciones (0 si no se menciona),
-    "ingredients": [
-      { "name": "ingrediente", "quantity": "cantidad", "unit": "unidad" }
-    ],
-    "steps": [
-      { "order": 1, "description": "descripción del paso", "timerMinutes": null }
-    ],
-    "tags": ["tag1", "tag2"],
-    "categories": ["categoria"]
-  }
-}
-
-Si el texto NO contiene una receta, responde:
-{ "is_recipe": false }
-
-REGLAS:
-- quantity debe ser un string con el número (ej: "2", "1/2", "")
-- unit puede ser: "g", "kg", "ml", "l", "taza", "cucharada", "cucharadita", "unidad", "pizca", o ""
-- timerMinutes es un número si el paso tiene tiempo específico, sino null
-- Traduce todo al español si está en otro idioma
-- No incluyas texto extra, solo el JSON`;
-
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
+  const response = await fetch(endpoint, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': anthropicKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 2000,
-      messages: [{ role: 'user', content: prompt }],
+      contents: [{ parts: [{ text: RECIPE_PROMPT(platform, textContent) }] }],
+      generationConfig: {
+        temperature: 0.1,       // Baja temperatura = respuestas más precisas y consistentes
+        maxOutputTokens: 2048,
+      },
     }),
   });
 
   if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`Claude API error ${response.status}: ${err}`);
+    const err = await response.json().catch(() => ({}));
+    const msg = (err as any)?.error?.message || response.statusText;
+    throw new Error(`Gemini API error (${response.status}): ${msg}`);
   }
 
-  const claudeData = await response.json();
-  const rawText = claudeData.content?.[0]?.text || '';
-  const cleanJson = rawText.replace(/```json\n?|```\n?/g, '').trim();
+  const data = await response.json();
+  const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+  // Limpiar posibles markdown code fences que Gemini a veces incluye
+  const cleanJson = rawText
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/```\s*$/i, '')
+    .trim();
 
   let parsed: any;
   try {
     parsed = JSON.parse(cleanJson);
   } catch {
-    throw new Error('No se pudo interpretar la respuesta de Claude. Intenta con otro enlace.');
+    throw new Error('Gemini devolvió una respuesta inesperada. Intenta con otro enlace.');
   }
 
   if (!parsed.is_recipe || !parsed.recipe) {
@@ -214,20 +221,20 @@ REGLAS:
     name: parsed.recipe.name || 'Receta importada',
     description: parsed.recipe.description || '',
     ingredients: (parsed.recipe.ingredients || []).map((i: any) => ({
-      name: i.name || '',
-      quantity: String(i.quantity || ''),
-      unit: i.unit || '',
+      name: String(i.name || '').trim(),
+      quantity: String(i.quantity ?? ''),
+      unit: String(i.unit || ''),
     })),
     steps: (parsed.recipe.steps || []).map((s: any, idx: number) => ({
-      order: s.order || idx + 1,
-      description: s.description || '',
-      timerMinutes: s.timerMinutes || undefined,
+      order: Number(s.order) || idx + 1,
+      description: String(s.description || ''),
+      timerMinutes: s.timerMinutes ? Number(s.timerMinutes) : undefined,
     })),
     photos: metadata.thumbnailUrl ? [metadata.thumbnailUrl] : [],
     videoUrl: url,
     categories: parsed.recipe.categories || [],
     tags: parsed.recipe.tags || [],
-    servings: parsed.recipe.servings || 0,
+    servings: Number(parsed.recipe.servings) || 0,
     source_url: url,
     source_platform: platform,
   };
@@ -235,45 +242,41 @@ REGLAS:
   return { is_recipe: true, recipe };
 }
 
-// ─── Función principal ────────────────────────────────────────────────────────
+// ─── Función principal exportada ──────────────────────────────────────────────
 
 export async function fetchAndParseRecipe(url: string): Promise<ParsedRecipeResult> {
   const platform = detectPlatform(url);
   if (!platform) {
-    throw new Error('URL no válida. Solo se aceptan enlaces de Instagram, TikTok o YouTube.');
+    throw new Error('URL no válida. Solo se aceptan enlaces de Instagram o TikTok.');
+  }
+
+  if (platform === 'youtube') {
+    throw new Error('Para YouTube usa "Normalizar receta" y pega el texto de la descripción del video.');
   }
 
   const scrapKey = getScrapCreatorsKey();
   if (!scrapKey) {
-    throw new Error('Falta la API key de ScrapeCreators. Configura VITE_SCRAPECREATORS_API_KEY en el archivo .env');
+    throw new Error('Falta la ScrapeCreators API Key. Configúrala en los ajustes (⚙️).');
   }
 
   let metadata: VideoMetadata;
-
   if (platform === 'tiktok') {
     metadata = await fetchTikTokMetadata(url, scrapKey);
-  } else if (platform === 'instagram') {
-    metadata = await fetchInstagramMetadata(url, scrapKey);
   } else {
-    throw new Error('Para YouTube, usa "Normalizar receta" y pega el texto de la descripción del video manualmente.');
+    metadata = await fetchInstagramMetadata(url, scrapKey);
   }
 
   if (!metadata.description && !metadata.transcript) {
-    throw new Error('El video no tiene descripción con texto. Prueba con "Normalizar receta" pegando el contenido manualmente.');
+    throw new Error(
+      'Este video no tiene descripción de texto suficiente. Usa "Normalizar receta" y pega el texto manualmente.'
+    );
   }
 
-  return parseWithClaude(metadata, url, platform);
+  return parseWithGemini(metadata, url, platform);
 }
 
-// ─── Verificar configuración de keys ─────────────────────────────────────────
-export function checkApiKeysConfigured(): { scrapecreators: boolean; anthropic: boolean } {
-  return {
-    scrapecreators: !!getScrapCreatorsKey(),
-    anthropic: !!getAnthropicKey(),
-  };
-}
+// ─── Compatibilidad con código existente ─────────────────────────────────────
 
-// Compatibilidad con código existente
 export async function fetchMetadataFromUrl(
   _url: string
 ): Promise<{ title: string; description: string } | null> {
