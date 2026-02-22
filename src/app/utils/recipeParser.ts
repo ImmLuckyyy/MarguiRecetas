@@ -46,12 +46,15 @@ function getScrapCreatorsKey(): string {
 }
 
 function getGeminiKey(): string {
-  return (
-    import.meta.env.VITE_GEMINI_API_KEY ||
-    (window as any).__GEMINI_KEY__ ||
-    sessionStorage.getItem('sc_geminikey') ||
-    ''
-  );
+  // Priority: sessionStorage (entered via UI) → window var → .env build-time var
+  const fromSession = sessionStorage.getItem('sc_geminikey');
+  const fromWindow = (window as any).__GEMINI_KEY__;
+  const fromEnv = import.meta.env.VITE_GEMINI_API_KEY;
+  const key = fromSession || fromWindow || fromEnv || '';
+  if (!key) {
+    console.warn('[Gemini] No API key found. Set VITE_GEMINI_API_KEY in .env or enter it via UI settings.');
+  }
+  return key;
 }
 
 // ─── Detectar plataforma ─────────────────────────────────────────────────────
@@ -176,7 +179,9 @@ async function parseWithGemini(
     .filter(Boolean)
     .join('\n\n');
 
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`;
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${geminiKey}`;
+
+  console.log('[Gemini] Sending request to:', endpoint.replace(geminiKey, '***'));
 
   const response = await fetch(endpoint, {
     method: 'POST',
@@ -184,15 +189,19 @@ async function parseWithGemini(
     body: JSON.stringify({
       contents: [{ parts: [{ text: RECIPE_PROMPT(platform, textContent) }] }],
       generationConfig: {
-        temperature: 0.1,       // Baja temperatura = respuestas más precisas y consistentes
+        temperature: 0.1,
         maxOutputTokens: 2048,
       },
     }),
   });
 
+  console.log('[Gemini] Response status:', response.status);
+
   if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    const msg = (err as any)?.error?.message || response.statusText;
+    const errBody = await response.text();
+    console.error('[Gemini] Error body:', errBody);
+    let msg = response.statusText;
+    try { msg = JSON.parse(errBody)?.error?.message || msg; } catch {}
     throw new Error(`Gemini API error (${response.status}): ${msg}`);
   }
 
