@@ -127,29 +127,35 @@ export function RecipesPage({ onRecipeClick, onNewRecipe }: RecipesPageProps) {
         )}
       </div>
 
-      <motion.button
-        whileTap={{ scale: 0.9 }}
-        onClick={onNewRecipe}
-        className="fixed bottom-28 right-4 w-14 h-14 bg-blue-500 text-white rounded-full shadow-lg flex items-center justify-center active:bg-blue-600 transition-colors z-40"
-      >
-        <Plus size={28} strokeWidth={2.5} />
-      </motion.button>
+      {/* Botones flotantes agrupados en columna sobre la barra de navegación */}
+      <div className="fixed bottom-24 right-4 flex flex-col items-center gap-3 z-40">
+        <motion.button
+          whileTap={{ scale: 0.9 }}
+          onClick={() => setShowNormalizeDialog(true)}
+          className="w-12 h-12 bg-purple-500 text-white rounded-full shadow-lg flex items-center justify-center active:bg-purple-600 transition-colors"
+          title="Normalizar receta"
+        >
+          <FileText size={20} strokeWidth={2.5} />
+        </motion.button>
 
-      <motion.button
-        whileTap={{ scale: 0.9 }}
-        onClick={() => setShowImportDialog(true)}
-        className="fixed bottom-[9.5rem] right-4 w-12 h-12 bg-green-500 text-white rounded-full shadow-lg flex items-center justify-center active:bg-green-600 transition-colors z-40"
-      >
-        <Link2 size={20} strokeWidth={2.5} />
-      </motion.button>
+        <motion.button
+          whileTap={{ scale: 0.9 }}
+          onClick={() => setShowImportDialog(true)}
+          className="w-12 h-12 bg-green-500 text-white rounded-full shadow-lg flex items-center justify-center active:bg-green-600 transition-colors"
+          title="Importar receta"
+        >
+          <Link2 size={20} strokeWidth={2.5} />
+        </motion.button>
 
-      <motion.button
-        whileTap={{ scale: 0.9 }}
-        onClick={() => setShowNormalizeDialog(true)}
-        className="fixed bottom-52 right-4 w-12 h-12 bg-purple-500 text-white rounded-full shadow-lg flex items-center justify-center active:bg-purple-600 transition-colors z-40"
-      >
-        <FileText size={20} strokeWidth={2.5} />
-      </motion.button>
+        <motion.button
+          whileTap={{ scale: 0.9 }}
+          onClick={onNewRecipe}
+          className="w-14 h-14 bg-blue-500 text-white rounded-full shadow-lg flex items-center justify-center active:bg-blue-600 transition-colors"
+          title="Nueva receta"
+        >
+          <Plus size={28} strokeWidth={2.5} />
+        </motion.button>
+      </div>
 
       <ImportRecipeDialog
         isOpen={showImportDialog}
