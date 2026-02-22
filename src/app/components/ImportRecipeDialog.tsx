@@ -6,6 +6,7 @@ import {
   fetchAndParseRecipe,
   checkApiKeysConfigured,
   ParsedRecipe,
+
 } from '../utils/recipeParser';
 
 interface ImportRecipeDialogProps {
@@ -25,39 +26,36 @@ export function ImportRecipeDialog({ isOpen, onClose, onImport }: ImportRecipeDi
 
   // API keys (se guardan solo en sessionStorage para la sesión actual)
   const [scrapKey, setScrapKey] = useState('');
-  const [anthropicKey, setAnthropicKey] = useState('');
+  const [geminiKey, setGeminiKey] = useState('');
   const [showScrapKey, setShowScrapKey] = useState(false);
-  const [showAnthropicKey, setShowAnthropicKey] = useState(false);
+  const [showGeminiKey, setShowGeminiKey] = useState(false);
 
   useEffect(() => {
     // Cargar keys guardadas en sessionStorage
     const savedScrap = sessionStorage.getItem('sc_scrapekey') || '';
-    const savedAnthropic = sessionStorage.getItem('sc_anthropickey') || '';
+    const savedGemini = sessionStorage.getItem('sc_geminikey') || '';
     setScrapKey(savedScrap);
-    setAnthropicKey(savedAnthropic);
+    setGeminiKey(savedGemini);
 
-    const { scrapecreators, anthropic } = checkApiKeysConfigured();
-    if (!scrapecreators || !anthropic) {
-      setShowConfig(!savedScrap || !savedAnthropic);
+    const { scrapecreators, gemini } = checkApiKeysConfigured();
+    if (!scrapecreators || !gemini) {
+      setShowConfig(!savedScrap || !savedGemini);
     }
   }, [isOpen]);
 
   const saveKeys = () => {
     if (scrapKey) sessionStorage.setItem('sc_scrapekey', scrapKey);
-    if (anthropicKey) sessionStorage.setItem('sc_anthropickey', anthropicKey);
-    // Inyectar en import.meta.env temporalmente no es posible,
-    // las variables se inyectan en tiempo de build.
-    // En su lugar usamos un override global para esta sesión:
+    if (geminiKey) sessionStorage.setItem('sc_geminikey', geminiKey);
     (window as any).__SCRAPECREATORS_KEY__ = scrapKey;
-    (window as any).__ANTHROPIC_KEY__ = anthropicKey;
+    (window as any).__GEMINI_KEY__ = geminiKey;
     setShowConfig(false);
   };
 
   const keysReady = (): boolean => {
-    const { scrapecreators, anthropic } = checkApiKeysConfigured();
+    const { scrapecreators, gemini } = checkApiKeysConfigured();
     const sessionScrap = sessionStorage.getItem('sc_scrapekey');
-    const sessionAnthropic = sessionStorage.getItem('sc_anthropickey');
-    return (scrapecreators || !!sessionScrap) && (anthropic || !!sessionAnthropic);
+    const sessionGemini = sessionStorage.getItem('sc_geminikey');
+    return (scrapecreators || !!sessionScrap) && (gemini || !!sessionGemini);
   };
 
   const handleImportUrl = async () => {
@@ -81,9 +79,9 @@ export function ImportRecipeDialog({ isOpen, onClose, onImport }: ImportRecipeDi
     // Inyectar keys de sesión en el entorno si no vienen del .env
     if (!import.meta.env.VITE_SCRAPECREATORS_API_KEY) {
       const sessionScrap = sessionStorage.getItem('sc_scrapekey') || '';
-      const sessionAnthropic = sessionStorage.getItem('sc_anthropickey') || '';
+      const sessionGemini = sessionStorage.getItem('sc_geminikey') || '';
       (window as any).__SCRAPECREATORS_KEY__ = sessionScrap;
-      (window as any).__ANTHROPIC_KEY__ = sessionAnthropic;
+      (window as any).__GEMINI_KEY__ = sessionGemini;
     }
 
     setStatus('loading');
@@ -207,29 +205,29 @@ export function ImportRecipeDialog({ isOpen, onClose, onImport }: ImportRecipeDi
             {/* Anthropic Key */}
             <div>
               <label className="block text-xs font-medium text-gray-700 mb-1">
-                Anthropic API Key{' '}
+                Google Gemini API Key{' '}
                 <a
-                  href="https://console.anthropic.com"
+                  href="https://aistudio.google.com/app/apikey"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="text-blue-600 underline"
                 >
-                  (obtener en console.anthropic.com)
+                  (obtener gratis en Google AI Studio)
                 </a>
               </label>
               <div className="relative">
                 <input
-                  type={showAnthropicKey ? 'text' : 'password'}
-                  value={anthropicKey}
-                  onChange={(e) => setAnthropicKey(e.target.value)}
-                  placeholder="sk-ant-..."
+                  type={showGeminiKey ? 'text' : 'password'}
+                  value={geminiKey}
+                  onChange={(e) => setGeminiKey(e.target.value)}
+                  placeholder="AIzaSy..."
                   className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
                 <button
-                  onClick={() => setShowAnthropicKey(!showAnthropicKey)}
+                  onClick={() => setShowGeminiKey(!showGeminiKey)}
                   className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400"
                 >
-                  {showAnthropicKey ? <EyeOff size={14} /> : <Eye size={14} />}
+                  {showGeminiKey ? <EyeOff size={14} /> : <Eye size={14} />}
                 </button>
               </div>
             </div>
@@ -240,13 +238,13 @@ export function ImportRecipeDialog({ isOpen, onClose, onImport }: ImportRecipeDi
               </p>
               <pre className="text-xs text-blue-800 mt-1 font-mono bg-blue-100 rounded p-2 overflow-x-auto">
 {`VITE_SCRAPECREATORS_API_KEY=sc_...
-VITE_ANTHROPIC_API_KEY=sk-ant-...`}
+VITE_GEMINI_API_KEY=AIzaSy...`}
               </pre>
             </div>
 
             <button
               onClick={saveKeys}
-              disabled={!scrapKey || !anthropicKey}
+              disabled={!scrapKey || !geminiKey}
               className="w-full py-2.5 bg-amber-500 text-white rounded-xl text-sm font-medium disabled:bg-gray-300 disabled:cursor-not-allowed"
             >
               Guardar para esta sesión
@@ -301,7 +299,7 @@ VITE_ANTHROPIC_API_KEY=sk-ant-...`}
                 <div className="flex items-center gap-2 p-3 bg-amber-50 border border-amber-200 rounded-xl">
                   <AlertCircle size={16} className="text-amber-600 flex-shrink-0" />
                   <p className="text-xs text-amber-800">
-                    Las API keys no están configuradas. Toca el ícono ⚙️ para configurarlas.
+                    Las API keys no están configuradas. Toca ⚙️ para ingresar tu ScrapeCreators key y tu Gemini key (ambas gratuitas).
                   </p>
                 </div>
               )}
