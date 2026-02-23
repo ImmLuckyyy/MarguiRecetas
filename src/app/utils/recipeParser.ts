@@ -114,7 +114,7 @@ async function fetchInstagramMetadata(url: string, apiKey: string): Promise<Vide
   }
 
   const data = await response.json();
-  const post = data?.data || data;
+  const post = data?.data?.xdt_shortcode_media || data?.data || data;
   const caption = post?.caption || post?.edge_media_to_caption?.edges?.[0]?.node?.text || '';
 
   return {
