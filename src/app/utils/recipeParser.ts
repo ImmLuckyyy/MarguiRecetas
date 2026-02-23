@@ -132,33 +132,21 @@ Analiza el siguiente texto de un video de ${platform} y extrae la receta si exis
 TEXTO DEL VIDEO:
 ${text}
 
-Si el texto contiene una receta, extráela y responde ÚNICAMENTE con JSON válido con esta estructura:
-{
-  "is_recipe": true,
-  "recipe": {
-    "name": "nombre de la receta",
-    "description": "descripción breve en 1-2 frases",
-    "servings": 4,
-    "ingredients": [
-      { "name": "harina", "quantity": "200", "unit": "g" }
-    ],
-    "steps": [
-      { "order": 1, "description": "descripción del paso", "timerMinutes": null }
-    ],
-    "tags": ["fácil", "postre"],
-    "categories": ["Postres"]
-  }
-}
+Si el texto contiene una receta, responde ÚNICAMENTE con este JSON exacto, sin markdown, sin backticks, sin texto extra:
+{"is_recipe":true,"recipe":{"name":"nombre","description":"desc breve","servings":4,"ingredients":[{"name":"ingrediente","quantity":"200","unit":"g"}],"steps":[{"order":1,"description":"paso","timerMinutes":null}],"tags":["tag"],"categories":["categoria"]}}
 
-Si el texto NO contiene una receta, responde exactamente:
-{ "is_recipe": false }
+Si NO es una receta responde exactamente: {"is_recipe":false}
 
-REGLAS IMPORTANTES:
-- Responde SOLO con el JSON, sin texto adicional, sin markdown, sin explicaciones
-- quantity siempre es string (ej: "200", "1/2", "")
-- unit solo puede ser: "g", "kg", "ml", "l", "taza", "cucharada", "cucharadita", "unidad", "pizca", o ""
-- timerMinutes es número entero si hay tiempo específico, sino null
-- Traduce todo al español
+REGLAS CRÍTICAS:
+- USA EXACTAMENTE estos nombres de campo en inglés: name, description, servings, ingredients, steps, tags, categories
+- En ingredients usa: name, quantity, unit
+- En steps usa: order, description, timerMinutes
+- NO uses: nombre, ingredientes, instrucciones, articulo, cantidad ni ningún campo en español
+- quantity es siempre string: "200", "1/2", ""
+- unit solo puede ser: "g","kg","ml","l","taza","cucharada","cucharadita","unidad","pizca",""
+- timerMinutes es número o null
+- Traduce los VALORES al español, no los nombres de campo
+- Sin markdown, sin backticks, sin explicaciones
 `.trim();
 
 async function parseWithGemini(
@@ -209,10 +197,10 @@ async function parseWithGemini(
   const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
 
   // Limpiar posibles markdown code fences que Gemini a veces incluye
+  // Gemini sometimes returns ```json { ... }``` all inline or multiline
   const cleanJson = rawText
-    .replace(/^```json\s*/i, '')
-    .replace(/^```\s*/i, '')
-    .replace(/```\s*$/i, '')
+    .replace(/```json\s*/gi, '')
+    .replace(/```\s*/g, '')
     .trim();
 
   let parsed: any;
