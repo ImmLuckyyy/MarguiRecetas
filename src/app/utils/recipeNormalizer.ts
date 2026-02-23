@@ -514,39 +514,27 @@ function getGeminiKey(): string {
 }
 
 const NORMALIZE_PROMPT = (text: string) => `
-Eres un asistente experto en recetas de cocina. Normaliza la siguiente receta y responde ÚNICAMENTE con JSON válido.
+Eres un asistente experto en recetas de cocina. Normaliza la siguiente receta y responde ÚNICAMENTE con JSON válido, sin markdown, sin backticks, sin texto extra.
 
 TEXTO DE ENTRADA:
 ${text}
 
-Responde con este JSON exacto (sin markdown, sin explicaciones):
-{
-  "is_recipe": true,
-  "name": "Nombre de la receta en español",
-  "description": "Descripción breve en 1-2 frases",
-  "servings": 4,
-  "prep_time": "15 min",
-  "cook_time": "30 min",
-  "total_time": "45 min",
-  "ingredients": [
-    { "name": "nombre del ingrediente", "quantity": "200", "unit": "g" }
-  ],
-  "steps": [
-    { "step": 1, "text": "Descripción clara del paso en español", "timerMinutes": null }
-  ],
-  "tags": ["fácil", "rápido"],
-  "categories": ["Platos principales"]
-}
+Responde EXACTAMENTE con este JSON (sin markdown, sin backticks, sin explicaciones):
+{"is_recipe":true,"name":"Nombre en español","description":"Descripción breve","servings":4,"prep_time":"15 min","cook_time":"30 min","total_time":"45 min","ingredients":[{"name":"ingrediente","quantity":"200","unit":"g"}],"steps":[{"step":1,"text":"Descripción del paso","timerMinutes":null}],"tags":["fácil"],"categories":["Platos principales"]}
 
-Si NO es una receta: { "is_recipe": false }
+Si NO es una receta responde exactamente: {"is_recipe":false}
 
-REGLAS:
-- Todo en español
-- unit solo puede ser: "g", "kg", "ml", "l", "taza", "cucharada", "cucharadita", "unidad", "pizca", o ""
-- quantity siempre string ("200", "1/2", "")
-- timerMinutes: número entero o null
-- prep_time/cook_time/total_time: string tipo "15 min" o null si no se menciona
-- Los pasos deben ser claros, concisos y en orden lógico
+REGLAS CRÍTICAS:
+- USA EXACTAMENTE estos nombres de campo en inglés: name, description, servings, prep_time, cook_time, total_time, ingredients, steps, tags, categories
+- En ingredients usa: name, quantity, unit
+- En steps usa: step, text, timerMinutes
+- NO uses campos en español: nombre, ingredientes, instrucciones, pasos, etc.
+- quantity es siempre string: "200", "1/2", ""
+- unit solo puede ser: "g","kg","ml","l","taza","cucharada","cucharadita","unidad","pizca",""
+- timerMinutes es número entero o null
+- prep_time/cook_time/total_time: "15 min" o null
+- Traduce los VALORES al español, no los nombres de campo
+- Sin markdown, sin backticks, sin explicaciones
 `.trim();
 
 async function refineWithGemini(text: string): Promise<NormalizedRecipe | null> {
@@ -576,7 +564,7 @@ async function refineWithGemini(text: string): Promise<NormalizedRecipe | null> 
 
   const data = await response.json();
   const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-  const clean = raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
+  const clean = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
 
   try {
     return JSON.parse(clean) as NormalizedRecipe;
